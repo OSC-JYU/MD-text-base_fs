@@ -1,0 +1,13 @@
+{
+  "service":"md-base",
+  "task": {
+    "id":"wordcloud"
+  },
+  "file": {
+    "type":"text",
+    "label":"test.txt"
+  },
+  "process": {
+    "@rid": "#112:4228"
+  }
+}

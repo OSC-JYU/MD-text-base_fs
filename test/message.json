@@ -1,0 +1,10 @@
+{
+  "id":"md-base",
+  "file": {
+    "type":"csv",
+    "label":"test.csv"
+  },
+  "process": {
+    "@rid": "#112:4228"
+  }
+}
