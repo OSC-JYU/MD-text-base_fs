@@ -8,15 +8,19 @@ import io
 import json
 import os
 import shutil
+import traceback
 import uuid
 import zipfile
 
 from typing import Any, Dict, List, Optional, Union
 
 from wordcloud import WordCloud
+from service_registration import register_service_registration_endpoints
 
 
 load_dotenv(dotenv_path=os.path.join(os.path.dirname(__file__), ".env"))
+
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 MD_PATH_ENV = os.getenv("MD_PATH", "")
 CONTAINER_MODE = os.getenv("CONTAINER", "").strip().lower() in ("1", "true", "yes", "on")
@@ -31,7 +35,7 @@ def ensure_md_path_for_disk_mode(md_path_env: str) -> None:
         raise RuntimeError("MD_PATH must be set when STORAGE_MODE=disk")
 
 OUTPUT_FOLDER = "output"
-for folder in (OUTPUT_FOLDER):
+for folder in (OUTPUT_FOLDER,):
     os.makedirs(folder, exist_ok=True)
 
 
@@ -98,6 +102,9 @@ async def root() -> Dict[str, str]:
     return {"message": "text base API for MessyDesk"}
 
 
+register_service_registration_endpoints(app, BASE_DIR, service_id="md-base")
+
+
 def resolve_md_relative_path(relative_path: str) -> str:
     if not isinstance(relative_path, str) or not relative_path.strip():
         raise HTTPException(status_code=400, detail="Invalid file.path")
@@ -113,14 +120,15 @@ def resolve_md_relative_path(relative_path: str) -> str:
     return resolved
 
 
-def infer_file_kind(msg: Dict[str, Any]) -> str:
+def infer_file_kind(msg: Dict[str, Any], expect_uploaded_set_zip: bool = False) -> str:
+    if expect_uploaded_set_zip and msg.get("input_set"):
+        return "zip"
+
     file_type = str(msg.get("file", {}).get("type", "")).lower()
     extension = str(msg.get("file", {}).get("extension", "")).lower()
 
     if file_type in ("json", "ocr.json") or extension == "json":
         return "json"
-    if msg.get("input_set"):
-        return "zip"
     return "text"
 
 
@@ -212,9 +220,8 @@ async def load_input_content(
     msg: Dict[str, Any],
     content_file: Optional[UploadFile],
 ) -> Union[str, Dict[str, Any], List[Any], List[str]]:
-    file_kind = infer_file_kind(msg)
-
     if content_file is not None:
+        file_kind = infer_file_kind(msg, expect_uploaded_set_zip=True)
         raw = await content_file.read()
         if file_kind == "zip":
             return await get_files_zip_from_bytes(raw)
@@ -232,6 +239,10 @@ async def load_input_content(
             detail="Missing content file. HTTP storage mode requires multipart content upload.",
         )
 
+    # In file-storage mode, callbacks are typically per-file and file.path points
+    # directly to a real content file (not a zip archive), even for set processes.
+    file_kind = infer_file_kind(msg, expect_uploaded_set_zip=False)
+
     source_rel_path = msg.get("file", {}).get("path")
     if not source_rel_path:
         raise HTTPException(
@@ -242,10 +253,6 @@ async def load_input_content(
     source_abs_path = resolve_md_relative_path(source_rel_path)
     if not os.path.exists(source_abs_path):
         raise HTTPException(status_code=404, detail=f"Source file not found: {source_rel_path}")
-
-    if file_kind == "zip":
-        with open(source_abs_path, "rb") as handle:
-            return await get_files_zip_from_bytes(handle.read())
 
     if file_kind == "json":
         with open(source_abs_path, "rb") as handle:
@@ -349,6 +356,7 @@ async def process_files(
     except HTTPException:
         raise
     except Exception as err:
+        traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Processing failed: {err}")
 
 
@@ -406,10 +414,25 @@ def execute_task(
             raise HTTPException(status_code=400, detail="split_text expects text content")
         return split_text(content_data, msg)
 
+    if task_id == "split_by_character_sequence":
+        if not isinstance(content_data, str):
+            raise HTTPException(status_code=400, detail="split_by_character_sequence expects text content")
+        return split_text_by_character_sequence_task(content_data, msg)
+
     if task_id == "join_text":
         if not isinstance(content_data, (str, list)):
             raise HTTPException(status_code=400, detail="join_text expects text content")
         return join_texts(content_data, msg)
+
+    if task_id == "join_raw":
+        if not isinstance(content_data, (str, list)):
+            raise HTTPException(status_code=400, detail="join_raw expects text content")
+        return join_raw_texts(content_data, msg)
+
+    if task_id == "search_replace":
+        if not isinstance(content_data, str):
+            raise HTTPException(status_code=400, detail="search_replace expects text content")
+        return [search_replace_text(content_data, msg)]
 
     raise HTTPException(status_code=400, detail=f"Unsupported task: {task_id}")
 
@@ -465,6 +488,7 @@ def remove_stop_words(content_data: str, msg: Dict[str, Any]) -> str:
 def split_text(content_data: str, msg: Dict[str, Any]) -> List[str]:
     params = msg.get("task", {}).get("params", {})
     chunk_size = params.get("chunk_size", 2000)
+    trim = as_bool(params.get("trim"), False)
 
     try:
         chunk_size = int(chunk_size)
@@ -477,9 +501,15 @@ def split_text(content_data: str, msg: Dict[str, Any]) -> List[str]:
     extension = msg.get("file", {}).get("extension", "txt")
     base_label = file_label.replace("." + extension, "")
 
+    text_for_split = normalize_whitespace_for_chunk_split(content_data) if trim else content_data
+
+    chunks = [
+        text_for_split[start : start + chunk_size]
+        for start in range(0, len(text_for_split), chunk_size)
+    ]
+
     uris = []
-    for chunk_id, start in enumerate(range(0, len(content_data), chunk_size), start=1):
-        chunk_content = content_data[start : start + chunk_size]
+    for chunk_id, chunk_content in enumerate(chunks, start=1):
         chunk_filename = f"{base_label}_{chunk_id}.txt"
         chunk_path = os.path.join(OUTPUT_FOLDER, chunk_filename)
         with open(chunk_path, "w", encoding="utf-8") as handle:
@@ -487,6 +517,229 @@ def split_text(content_data: str, msg: Dict[str, Any]) -> List[str]:
         uris.append(chunk_path)
 
     return uris
+
+
+def split_text_by_character_sequence_task(content_data: str, msg: Dict[str, Any]) -> List[str]:
+    params = msg.get("task", {}).get("params", {})
+    split_sequence = str(params.get("split_sequence") or "")
+    if not split_sequence:
+        raise HTTPException(status_code=400, detail="split_by_character_sequence requires task.params.split_sequence")
+
+    remove_sequence = as_bool(params.get("remove_sequence"), False)
+    sequence_at_line_start = as_bool(params.get("sequence_at_line_start"), False)
+
+    file_label = msg.get("file", {}).get("label", "chunk")
+    extension = msg.get("file", {}).get("extension", "txt")
+    base_label = file_label.replace("." + extension, "")
+
+    chunks = split_text_by_sequence(
+        content_data,
+        split_sequence,
+        remove_sequence,
+        sequence_at_line_start,
+    )
+    if not chunks:
+        chunks = [content_data]
+
+    uris = []
+    for chunk_id, chunk_content in enumerate(chunks, start=1):
+        chunk_filename = f"{base_label}_{chunk_id}.txt"
+        chunk_path = os.path.join(OUTPUT_FOLDER, chunk_filename)
+        with open(chunk_path, "w", encoding="utf-8") as handle:
+            handle.write(chunk_content)
+        uris.append(chunk_path)
+
+    return uris
+
+
+def as_bool(value: Any, default: bool = False) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"1", "true", "yes", "on"}:
+            return True
+        if normalized in {"0", "false", "no", "off"}:
+            return False
+    return default
+
+
+def normalize_whitespace_for_chunk_split(content_data: str) -> str:
+    # Collapse repeated whitespace so chunk_size works better for noisy text.
+    return " ".join(str(content_data).split())
+
+
+def split_text_by_sequence(
+    content_data: str,
+    sequence: str,
+    remove_sequence: bool,
+    sequence_at_line_start: bool,
+) -> List[str]:
+    if not sequence:
+        return [content_data]
+
+    split_positions = find_split_positions(content_data, sequence, sequence_at_line_start)
+    if not split_positions:
+        return [content_data]
+
+    starts = sorted({0, *split_positions})
+    chunks: List[str] = []
+
+    for idx, start in enumerate(starts):
+        end = starts[idx + 1] if idx + 1 < len(starts) else len(content_data)
+        chunk = content_data[start:end]
+
+        if remove_sequence and chunk.startswith(sequence):
+            chunk = chunk[len(sequence) :]
+
+        if chunk:
+            chunks.append(chunk)
+
+    return chunks
+
+
+def find_split_positions(content_data: str, sequence: str, sequence_at_line_start: bool) -> List[int]:
+    positions: List[int] = []
+
+    if sequence_at_line_start:
+        offset = 0
+        for line in content_data.splitlines(keepends=True):
+            trimmed = line.lstrip()
+            if trimmed.startswith(sequence):
+                line_leading_ws = len(line) - len(trimmed)
+                positions.append(offset + line_leading_ws)
+            offset += len(line)
+        return positions
+
+    start_idx = 0
+    while True:
+        found = content_data.find(sequence, start_idx)
+        if found < 0:
+            break
+        positions.append(found)
+        start_idx = found + len(sequence)
+
+    return positions
+
+
+def parse_search_replace_pairs(msg: Dict[str, Any]) -> List[Dict[str, str]]:
+    params = msg.get("task", {}).get("params", {})
+    raw_pairs: Any = (
+        params.get("pairs")
+        if params.get("pairs") is not None
+        else params.get("replacements")
+    )
+
+    if raw_pairs is None:
+        raw_pairs = params.get("search_replace")
+
+    parsed_pairs: List[Dict[str, str]] = []
+
+    if isinstance(raw_pairs, str):
+        lines = raw_pairs.splitlines()
+        for idx, raw_line in enumerate(lines, start=1):
+            line = raw_line.strip()
+            if not line:
+                continue
+            if ":" not in line:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Invalid search_replace pair on line {idx}: expected search:replace",
+                )
+
+            search, replace = line.split(":", 1)
+            if not search:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Invalid search_replace pair on line {idx}: empty search text",
+                )
+            parsed_pairs.append({"search": search, "replace": replace})
+
+        return parsed_pairs
+
+    if not isinstance(raw_pairs, list):
+        raise HTTPException(
+            status_code=400,
+            detail="search_replace requires task.params.pairs, replacements, or search_replace",
+        )
+
+    for idx, pair in enumerate(raw_pairs, start=1):
+        if isinstance(pair, dict):
+            search = pair.get("search")
+            replace = pair.get("replace", "")
+        elif isinstance(pair, str):
+            if ":" not in pair:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Invalid search_replace pair at index {idx}: expected search:replace",
+                )
+            search, replace = pair.split(":", 1)
+        else:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid search_replace pair at index {idx}: unsupported pair format",
+            )
+
+        if search is None:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid search_replace pair at index {idx}: missing search",
+            )
+
+        search_text = str(search)
+        replace_text = "" if replace is None else str(replace)
+
+        if search_text == "":
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid search_replace pair at index {idx}: empty search text",
+            )
+
+        parsed_pairs.append({"search": search_text, "replace": replace_text})
+
+    return parsed_pairs
+
+
+def search_replace_text(content_data: str, msg: Dict[str, Any]) -> str:
+    pairs = parse_search_replace_pairs(msg)
+    if not pairs:
+        raise HTTPException(status_code=400, detail="search_replace requires at least one valid pair")
+
+    result = str(content_data)
+    for pair in pairs:
+        result = result.replace(pair["search"], pair["replace"])
+
+    output_uuid = str(uuid.uuid4())
+    output_path = os.path.join(OUTPUT_FOLDER, output_uuid + ".txt")
+    with open(output_path, "w", encoding="utf-8") as handle:
+        handle.write(result)
+
+    return output_path
+
+
+def derive_many_to_one_output_uuid(msg: Dict[str, Any], task_id: str, include_root_source: bool = True) -> str:
+    explicit = msg.get("output_uuid")
+    if isinstance(explicit, str) and explicit.strip():
+        return explicit.strip()
+
+    set_process = str(msg.get("set_process") or msg.get("set_process_rid") or "")
+    root_source = ""
+    if include_root_source:
+        root_source = str(
+            msg.get("root_source_rid")
+            or (msg.get("root_source") or {}).get("@rid")
+            or ""
+        )
+
+    # Group-aware key: one stable output per process + root source group.
+    key_parts = [str(task_id or "task"), set_process, root_source]
+    stable_key = "|".join(key_parts)
+    if stable_key.strip("|"):
+        return uuid.uuid5(uuid.NAMESPACE_URL, stable_key).hex
+
+    return str(uuid.uuid4())
 
 
 def join_texts(content_data: Union[str, List[str]], msg: Dict[str, Any]) -> List[str]:
@@ -524,16 +777,73 @@ def join_texts(content_data: Union[str, List[str]], msg: Dict[str, Any]) -> List
 
     # File-storage many-to-one mode: append each incoming file content and only return
     # output on the final file.
-    output_uuid = msg.get("output_uuid")
-    if not output_uuid:
-        output_uuid = str(uuid.uuid4())
-        msg["output_uuid"] = output_uuid
+    output_uuid = derive_many_to_one_output_uuid(msg, "join_text")
+    msg["output_uuid"] = output_uuid
 
     output_path = os.path.join(OUTPUT_FOLDER, output_uuid + ".txt")
     current_file = int(msg.get("current_file", 1) or 1)
     total_files = int(msg.get("total_files", current_file) or current_file)
 
     # First file rewrites target; subsequent files append with separator if output exists.
+    if current_file <= 1:
+        mode = "w"
+    else:
+        mode = "a"
+
+    with open(output_path, mode, encoding="utf-8") as handle:
+        needs_separator = current_file > 1 and os.path.exists(output_path) and os.path.getsize(output_path) > 0
+        if needs_separator:
+            handle.write(separator)
+        handle.write(content_data)
+
+    if current_file == total_files:
+        return [output_path]
+
+    return []
+
+
+def join_raw_texts(content_data: Union[str, List[str]], msg: Dict[str, Any]) -> List[str]:
+    separator = msg.get("task", {}).get("params", {}).get("separator", "\n")
+    if separator is None:
+        separator = "\n"
+
+    # Legacy mode: join a list of extracted file paths.
+    if isinstance(content_data, list):
+        readme_names = {"readme.txt", "readme.md"}
+        file_paths = [
+            path
+            for path in content_data
+            if os.path.basename(path).lower() not in readme_names
+        ]
+
+        joined_parts = []
+        for path in sorted(file_paths):
+            if not os.path.isfile(path):
+                continue
+            with open(path, "rb") as handle:
+                text = handle.read().decode("utf-8", errors="ignore")
+            if text:
+                joined_parts.append(text)
+
+        output_uuid = str(uuid.uuid4())
+        output_path = os.path.join(OUTPUT_FOLDER, output_uuid + ".txt")
+        with open(output_path, "w", encoding="utf-8") as handle:
+            handle.write(separator.join(joined_parts))
+
+        return [output_path]
+
+    if not isinstance(content_data, str):
+        raise HTTPException(status_code=400, detail="join_raw expects text content")
+
+    # Group-agnostic many-to-one mode: append all callbacks from the same set process
+    # to one output, while still accepting grouped message metadata.
+    output_uuid = derive_many_to_one_output_uuid(msg, "join_raw", include_root_source=False)
+    msg["output_uuid"] = output_uuid
+
+    output_path = os.path.join(OUTPUT_FOLDER, output_uuid + ".txt")
+    current_file = int(msg.get("batch_current_file", msg.get("current_file", 1)) or 1)
+    total_files = int(msg.get("batch_total_files", msg.get("total_files", current_file)) or current_file)
+
     if current_file <= 1:
         mode = "w"
     else:

@@ -3,7 +3,7 @@
 
 UNFINISHED!
 
-This service contains simple python scripts for JSON, text and image processing.
+This service contains simple python scripts for text and JSON.
 
 
 Origin of stop word lists:
@@ -12,6 +12,12 @@ https://github.com/stopwords-iso/stopwords-iso
 ## API
 
 Endpoint: `http://localhost:9008/process`
+
+Service registration endpoints:
+
+- `GET /health` returns basic liveness status.
+- `GET /config` returns runtime descriptor from `service.json`.
+- `GET /help` returns markdown help (from `index.md`, `help/index.md`, or `README.md`).
 
 ### File storage mode (default for `elg_fs`)
 
@@ -61,20 +67,17 @@ Start from project directory so local `.env` is picked up:
 	python api.py
 
 
-Build and start
+Or build container and start it (will also pick .env)
 
 	make build
 	make start
 
-or directly
-
- 	docker run --name md-base -p 9008:9008 
 
 ## Starting service for MessyDesk (local development)
 
 in MD-consumers 
 
-	TOPIC=md-base node src/index.mjs
+	TOPIC=md-text-base_fs DEV_URL=http://localhost:9008 node src/index.mjs
 
 
 

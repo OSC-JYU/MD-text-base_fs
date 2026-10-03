@@ -14,8 +14,9 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy the application code
-COPY api.py /app/api.py 
+COPY api.py service_registration.py service.json /app/
 COPY stopwords/* /app/stopwords/
+COPY help /app/help/
 
 # Expose the port the app runs on
 EXPOSE 9008

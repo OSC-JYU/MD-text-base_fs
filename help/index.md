@@ -1,0 +1,42 @@
+# MD-Text-Base Help
+
+The **MD-Text-Base** service provides essential utilities for manipulating raw text documents and JSON files within your MessyDesk workspace.
+
+---
+
+## Split Tasks
+
+Split crunchers are one-to-many operations that break a single long text file down into a structured set of smaller, more manageable text nodes. This is highly useful for tools like the **Search** service, which query and index data on a per-document level.
+
+### Split Text (`split_text`)
+Breaks a text document into uniform chunks based on a maximum character threshold.
+
+* **Parameters:**
+  * `character_count` *(integer, default: `1000`)*: The maximum number of characters allowed in each chunk (including spaces).
+  * `trim` *(boolean, default: `false`)*: When enabled, collapses repeated whitespaces, tabs, and consecutive newlines before measuring the character count.
+
+### Split by Character Sequence (`split_by_character_sequence`)
+Allows you to define exact structural boundaries or anchor markers where a text document should be cut into separate chunks. This is ideal for dividing a single file containing a collection of letters, ledger entries, or survey responses.
+
+* **Parameters:**
+  * `split_sequence` *(string, required)*: The specific text token or delimiter string that marks the beginning of a new document chunk (e.g., `### NEW CHAPTER` or `[PAGE BREAK]`).
+  * `remove_sequence` *(boolean, default: `false`)*: Strips the matching delimiter token away from the beginning of the newly generated chunks.
+  * `sequence_at_line_start` *(boolean, default: `false`)*: Restricts matches to instances where the sequence appears strictly at the start of a line (ignoring leading whitespace).
+
+---
+
+## Join Tasks
+
+Join crunchers are many-to-one or complex grouping utilities designed to merge multiple independent text files into consolidated output documents.
+
+### Clever Join Texts (`clever_join_texts`)
+Combines multiple files within a set back into unified documents by automatically reading their historical lineage. 
+
+Instead of merging everything into a single massive file, MessyDesk traces the graph's history to locate the original multi-page sources or archives from which the text segments were derived. It then groups and joins the segments accordingly.
+
+> 💡 **How it works:** Imagine you have two distinct multi-page files: `DocumentA.pdf` and `DocumentB.pdf`. You split them into individual pages, run an OCR text extraction cruncher on the pages, and feed all the resulting text segments into a single set. 
+> 
+> Applying a **Clever Join** to that set evaluates the origin tree: it identifies which segments belong to `DocumentA` and which belong to `DocumentB`, outputting exactly **two** compiled text documents—one matching the complete text of `DocumentA` and one for `DocumentB`.
+
+### Raw Join Texts (`raw_join_texts`)
+A straightforward consolidation utility. It ignores file lineage entirely, takes every text file present in the connected input set, and dumps their contents back-to-back into a single, unified text node.

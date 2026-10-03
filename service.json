@@ -1,0 +1,190 @@
+{
+    "local_url": "http://localhost:9008",
+    "id": "md-text-base_fs",
+    "adapter": "elg_fs",
+    "api": "/process",
+    "name": "Basic text processing",
+    "source_url": "https://github.com/MD-python",
+    "status": "experimental",
+    "supported_formats": [
+        "txt"
+    ],
+    "supported_types": [],
+    "description": "Base Python scripts for texts and images.",
+    "tasks": {
+        "wordcloud": {
+            "name": "Create Wordcloud",
+            "description": "Create wordcloud from text",
+            "info": "Wordcloud",
+            "behaviour": "one-to-one"
+        },
+        "remove_stop_words": {
+            "name": "Remove Stop Words",
+            "description": "Remove stop words from text",
+            "info": "Remove Stop Words",
+            "params": {
+                "language": {
+                    "type": "string",
+                    "description": "Language of the text",
+                    "default": "en"
+                }
+            },
+            "params_help": {
+                "language": {
+                    "name": "language",
+                    "help": "Define the language of the text",
+                    "values": [
+                        {
+                            "value": "en",
+                            "title": "English"
+                        },
+                        {
+                            "value": "fi",
+                            "title": "Finnish"
+                        },
+                        {
+                            "value": "sv",
+                            "title": "Swedish"
+                        }
+                    ],
+                    "display": "dropdown"
+                }
+            },
+            "behaviour": "one-to-one"
+        },
+        "split_text": {
+            "name": "Split Text",
+            "description": "Split text into chunks",
+            "info": "Split Text",
+            "output_set": "Text chunks",
+            "params": {
+                "chunk_size": {
+                    "type": "integer",
+                    "description": "Number of characters in each chunk",
+                    "default": 1000
+                },
+                "trim": {
+                    "type": "boolean",
+                    "description": "Trim and normalize whitespace before chunking",
+                    "default": false
+                }
+            },
+            "params_help": {
+                "chunk_size": {
+                    "name": "chunk_size",
+                    "description": "Chunk size",
+                    "display": "textinput"
+                },
+                "trim": {
+                    "name": "trim",
+                    "description": "Collapse repeated whitespace before character-count split",
+                    "display": "checkbox"
+                }
+            },
+            "behaviour": "one-to-many"
+        },
+        "split_by_character_sequence": {
+            "name": "Split by character sequence",
+            "description": "Split text when a character sequence is found",
+            "info": "Split by sequence",
+            "output_set": "Text chunks",
+            "params": {
+                "split_sequence": {
+                    "type": "string",
+                    "description": "Split when this sequence is found",
+                    "default": ""
+                },
+                "remove_sequence": {
+                    "type": "boolean",
+                    "description": "Remove split sequence from chunk starts",
+                    "default": false
+                },
+                "sequence_at_line_start": {
+                    "type": "boolean",
+                    "description": "Match sequence only when it is at trimmed line start",
+                    "default": false
+                }
+            },
+            "params_help": {
+                "split_sequence": {
+                    "name": "split_sequence",
+                    "description": "Split when this character sequence is found",
+                    "display": "textinput"
+                },
+                "remove_sequence": {
+                    "name": "remove_sequence",
+                    "description": "Remove sequence from the beginning of created chunks",
+                    "display": "checkbox"
+                },
+                "sequence_at_line_start": {
+                    "name": "sequence_at_line_start",
+                    "description": "Require sequence at line start after trimming whitespace",
+                    "display": "checkbox"
+                }
+            },
+            "behaviour": "one-to-many"
+        },
+        "join_text": {
+            "name": "Join texts",
+            "description": "Join texts into one text",
+            "info": "Join Text",
+            "behaviour": "many-to-one",
+            "set_only": 1,
+            "params": {
+                "separator": {
+                    "type": "string",
+                    "description": "Separator",
+                    "default": "\n"
+                }
+            },
+            "params_help": {
+                "separator": {
+                    "name": "separator",
+                    "description": "Separator",
+                    "display": "textinput"
+                }
+            }
+        },
+        "join_raw": {
+            "name": "Join raw",
+            "description": "Join all grouped inputs into a single text output",
+            "info": "Join Raw",
+            "behaviour": "many-to-one",
+            "set_only": 1,
+            "params": {
+                "separator": {
+                    "type": "string",
+                    "description": "Separator",
+                    "default": "\n"
+                }
+            },
+            "params_help": {
+                "separator": {
+                    "name": "separator",
+                    "description": "Separator",
+                    "display": "textinput"
+                }
+            }
+        },
+        "search_replace": {
+            "name": "Search and replace",
+            "description": "Apply ordered search:replace pairs to text",
+            "info": "Search and Replace",
+            "behaviour": "one-to-one",
+            "params": {
+                "search_replace": {
+                    "type": "string",
+                    "description": "One search:replace pair per line, processed top to bottom",
+                    "default": ""
+                }
+            },
+            "params_help": {
+                "search_replace": {
+                    "name": "search_replace",
+                    "description": "Temporary format: one search:replace pair per line",
+                    "display": "textarea"
+                }
+            }
+        }
+    }
+}
