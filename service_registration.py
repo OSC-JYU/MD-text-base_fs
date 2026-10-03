@@ -54,6 +54,7 @@ def register_service_registration_endpoints(
     descriptor_filename: str = "service.json",
     help_candidates: Optional[List[str]] = None,
     service_id: str = "md-base",
+    adapter: Optional[str] = None,
 ) -> None:
     candidates = help_candidates or get_default_help_candidates(base_dir)
 
@@ -64,6 +65,9 @@ def register_service_registration_endpoints(
     @app.get("/config")
     async def get_config() -> JSONResponse:
         descriptor = load_service_descriptor(base_dir, descriptor_filename)
+        if adapter:
+            # the adapter that matches the storage mode the service started in
+            descriptor["adapter"] = adapter
         return JSONResponse(status_code=200, content=descriptor)
 
     @app.get("/help")

@@ -1,5 +1,6 @@
 from fastapi import FastAPI, UploadFile, File, HTTPException, BackgroundTasks, Request
 from fastapi.responses import FileResponse
+from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
 
@@ -8,6 +9,7 @@ import io
 import json
 import os
 import shutil
+import time
 import traceback
 import uuid
 import zipfile
@@ -16,70 +18,27 @@ from typing import Any, Dict, List, Optional, Union
 
 from wordcloud import WordCloud
 from service_registration import register_service_registration_endpoints
+import md_storage
 
 
 load_dotenv(dotenv_path=os.path.join(os.path.dirname(__file__), ".env"))
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
-MD_PATH_ENV = os.getenv("MD_PATH", "")
-CONTAINER_MODE = os.getenv("CONTAINER", "").strip().lower() in ("1", "true", "yes", "on")
-STORAGE_MODE = (os.getenv("STORAGE_MODE") or os.getenv("FILE_STORAGE_MODE") or "disk").strip().lower()
+# Disk mode when MD_PATH has a data/ directory, HTTP mode otherwise (see md_storage.py). Without
+# MD_PATH the service used to refuse to start. MD_ROOT is None in HTTP mode.
+MD_ROOT = str(md_storage.MD_ROOT) if md_storage.DISK_MODE else None
+
 
 def is_disk_mode() -> bool:
-    return STORAGE_MODE == "disk"
+    return MD_ROOT is not None
 
 
-def ensure_md_path_for_disk_mode(md_path_env: str) -> None:
-    if is_disk_mode() and (not isinstance(md_path_env, str) or not md_path_env.strip()):
-        raise RuntimeError("MD_PATH must be set when STORAGE_MODE=disk")
-
-OUTPUT_FOLDER = "output"
-for folder in (OUTPUT_FOLDER,):
-    os.makedirs(folder, exist_ok=True)
-
-
-def resolve_md_root(md_path_env: str, container_mode: bool) -> str:
-    """Resolve MessyDesk root containing data/ while allowing local dev fallback."""
-    candidates = []
-    if isinstance(md_path_env, str) and md_path_env.strip():
-        raw = os.path.abspath(md_path_env.strip())
-        if os.path.basename(raw) == "data":
-            candidates.append(os.path.dirname(raw))
-        candidates.append(raw)
-
-    if container_mode:
-        candidates.append("/app")
-
-    candidates.append(os.path.abspath("."))
-
-    seen = set()
-    existing_dirs = []
-    for candidate in candidates:
-        if candidate in seen:
-            continue
-        seen.add(candidate)
-
-        if os.path.isdir(os.path.join(candidate, "data")):
-            return candidate
-        if os.path.isdir(candidate):
-            existing_dirs.append(candidate)
-
-    if existing_dirs:
-        return existing_dirs[0]
-
-    raise RuntimeError(
-        "Could not resolve MessyDesk data root. Set MD_PATH to a directory containing data/."
-    )
-
-
-try:
-    ensure_md_path_for_disk_mode(MD_PATH_ENV)
-    MD_ROOT = resolve_md_root(MD_PATH_ENV, CONTAINER_MODE)
-except RuntimeError:
-    if is_disk_mode():
-        raise
-    MD_ROOT = os.path.abspath(".")
+OUTPUT_FOLDER = os.path.abspath(os.getenv("OUTPUT_FOLDER", os.path.join(BASE_DIR, "output")))
+os.makedirs(OUTPUT_FOLDER, exist_ok=True)
+# HTTP outputs nobody downloaded and unfinished many-to-one files are removed after this
+OUTPUT_MAX_AGE_SECONDS = int(os.getenv("OUTPUT_MAX_AGE_SECONDS", str(24 * 3600)))
+STOPWORDS_DIR = os.path.join(BASE_DIR, "stopwords")
 
 
 app = FastAPI(
@@ -102,12 +61,24 @@ async def root() -> Dict[str, str]:
     return {"message": "text base API for MessyDesk"}
 
 
-register_service_registration_endpoints(app, BASE_DIR, service_id="md-base")
+register_service_registration_endpoints(
+    app,
+    BASE_DIR,
+    service_id="md-text-base_fs",
+    # elg_fs in disk mode, elg in HTTP mode, unless SERVICE_ADAPTER says otherwise
+    adapter=os.getenv("SERVICE_ADAPTER") or md_storage.storage_adapter(),
+)
 
 
 def resolve_md_relative_path(relative_path: str) -> str:
     if not isinstance(relative_path, str) or not relative_path.strip():
         raise HTTPException(status_code=400, detail="Invalid file.path")
+
+    if not is_disk_mode():
+        raise HTTPException(
+            status_code=400,
+            detail="Missing content file, and disk mode is off (MD_PATH not found).",
+        )
 
     if os.path.isabs(relative_path):
         raise HTTPException(status_code=400, detail="file.path must be relative to MD_PATH")
@@ -191,8 +162,9 @@ async def parse_content_json_bytes(raw: bytes) -> Union[Dict[str, Any], List[Dic
         raise HTTPException(status_code=400, detail=f"Invalid JSON in content file: {err}")
 
 
-async def get_files_zip_from_bytes(content_data: bytes) -> List[str]:
-    extract_dir = os.path.join(OUTPUT_FOLDER, f"zip_{uuid.uuid4().hex}")
+async def get_files_zip_from_bytes(content_data: bytes, work_dir: str) -> List[str]:
+    # inside the request's work dir, so it is removed with it (zip_<uuid> dirs stayed for good)
+    extract_dir = os.path.join(work_dir, ".zip")
     os.makedirs(extract_dir, exist_ok=True)
 
     try:
@@ -219,12 +191,13 @@ async def get_files_zip_from_bytes(content_data: bytes) -> List[str]:
 async def load_input_content(
     msg: Dict[str, Any],
     content_file: Optional[UploadFile],
+    work_dir: str,
 ) -> Union[str, Dict[str, Any], List[Any], List[str]]:
     if content_file is not None:
         file_kind = infer_file_kind(msg, expect_uploaded_set_zip=True)
         raw = await content_file.read()
         if file_kind == "zip":
-            return await get_files_zip_from_bytes(raw)
+            return await get_files_zip_from_bytes(raw, work_dir)
         if file_kind == "json":
             return await parse_content_json_bytes(raw)
 
@@ -232,12 +205,6 @@ async def load_input_content(
             return raw.decode("utf-8")
         except UnicodeDecodeError as err:
             raise HTTPException(status_code=400, detail=f"Content file encoding error: {err}")
-
-    if not is_disk_mode():
-        raise HTTPException(
-            status_code=400,
-            detail="Missing content file. HTTP storage mode requires multipart content upload.",
-        )
 
     # In file-storage mode, callbacks are typically per-file and file.path points
     # directly to a real content file (not a zip archive), even for set processes.
@@ -275,8 +242,10 @@ def infer_output_type(extension: str) -> str:
     return "text"
 
 
-def to_legacy_response(output_paths: List[str]) -> Dict[str, Any]:
-    uris = [f"/files/{os.path.basename(path)}" for path in output_paths]
+def to_legacy_response(output_paths: List[str], work_dir: str) -> Dict[str, Any]:
+    # a list of plain uris: the elg adapter keeps each file name as the label, as disk mode does
+    output_id = os.path.basename(work_dir)
+    uris = [f"/files/{output_id}/{os.path.basename(path)}" for path in output_paths]
     return {"response": {"type": "stored", "uri": uris}}
 
 
@@ -299,16 +268,10 @@ def to_disk_response(output_paths: List[str], task_id: str, msg: Dict[str, Any])
     files: List[Dict[str, str]] = []
     for output_path in output_paths:
         safe_name = os.path.basename(output_path)
-        callback_name = safe_name
-        source_exists = os.path.isfile(output_path)
-
-        if source_exists:
-            target_path = os.path.join(tmp_dir, callback_name)
-            if os.path.abspath(output_path) != os.path.abspath(target_path):
-                if os.path.exists(target_path):
-                    callback_name = f"{uuid.uuid4().hex}_{safe_name}"
-                    target_path = os.path.join(tmp_dir, callback_name)
-                shutil.copy2(output_path, target_path)
+        # a unique tmp name, so parallel jobs can't overwrite each other; MessyDesk uses the label
+        callback_name = f"{uuid.uuid4().hex}_{safe_name}"
+        # moved, not copied: the copies stayed in output/ for good
+        shutil.move(output_path, os.path.join(tmp_dir, callback_name))
 
         ext = os.path.splitext(safe_name)[1].lower().lstrip(".")
         files.append(
@@ -322,12 +285,32 @@ def to_disk_response(output_paths: List[str], task_id: str, msg: Dict[str, Any])
 
     return {
         "task": task_id,
-        "storage_mode": STORAGE_MODE,
+        "storage_mode": "disk",
         "response": {
             "type": "disk",
             "files": files,
         },
     }
+
+
+def sweep_stale_outputs() -> None:
+    """Remove HTTP outputs nobody downloaded and many-to-one files whose set never finished."""
+    limit = time.time() - OUTPUT_MAX_AGE_SECONDS
+    for folder in (OUTPUT_FOLDER, os.path.join(OUTPUT_FOLDER, "many-to-one")):
+        if not os.path.isdir(folder):
+            continue
+        for name in os.listdir(folder):
+            entry = os.path.join(folder, name)
+            if name == "many-to-one":
+                continue
+            try:
+                if os.path.getmtime(entry) < limit:
+                    if os.path.isdir(entry):
+                        shutil.rmtree(entry, ignore_errors=True)
+                    else:
+                        os.remove(entry)
+            except OSError:
+                pass
 
 
 @app.post("/process")
@@ -337,20 +320,31 @@ async def process_files(
     message: Optional[UploadFile] = File(None),
     content: Optional[UploadFile] = File(None),
 ) -> Dict[str, Any]:
+    # With a content upload the request is answered in HTTP mode; without one the input is read
+    # from MessyDesk's storage (disk mode). Before, STORAGE_MODE alone decided, so a disk-mode
+    # service answered elg uploads with a disk response elg can't read.
+    http_mode = content is not None
+    work_dir = os.path.join(OUTPUT_FOLDER, uuid.uuid4().hex)
+    os.makedirs(work_dir)
+    served = False
     try:
+        sweep_stale_outputs()
         msg = await extract_message(http_request, request, message)
         task_id = msg.get("task", {}).get("id")
         if not task_id:
             raise HTTPException(status_code=400, detail="Missing task.id in request payload")
 
-        content_data = await load_input_content(msg, content)
-        output_paths = execute_task(task_id, content_data, msg)
+        content_data = await load_input_content(msg, content, work_dir)
+        # CPU-bound (wordcloud, large texts), so off the event loop
+        output_paths = await run_in_threadpool(execute_task, task_id, content_data, msg, work_dir)
+        shutil.rmtree(os.path.join(work_dir, ".zip"), ignore_errors=True)
 
-        if is_disk_mode():
+        if not http_mode:
             return to_disk_response(output_paths, task_id, msg)
 
-        response = to_legacy_response(output_paths)
-        response["response"]["storage_mode"] = STORAGE_MODE
+        response = to_legacy_response(output_paths, work_dir)
+        response["response"]["storage_mode"] = "http"
+        served = bool(output_paths)
         return response
 
     except HTTPException:
@@ -358,17 +352,24 @@ async def process_files(
     except Exception as err:
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Processing failed: {err}")
+    finally:
+        if not served:
+            shutil.rmtree(work_dir, ignore_errors=True)
 
 
-@app.get("/files/{filename:path}")
-def serve_file(filename: str, background_tasks: BackgroundTasks):
-    file_path = os.path.join(OUTPUT_FOLDER, filename)
-    if not os.path.isfile(file_path):
+@app.get("/files/{output_id}/{filename}")
+def serve_file(output_id: str, filename: str, background_tasks: BackgroundTasks):
+    output_dir = os.path.realpath(OUTPUT_FOLDER)
+    file_path = os.path.realpath(os.path.join(output_dir, output_id, filename))
+    # only files of one request dir; '../' paths read and then deleted any file
+    if os.path.dirname(os.path.dirname(file_path)) != output_dir or not os.path.isfile(file_path):
         raise HTTPException(status_code=404, detail="File not found")
 
     def remove_file(path: str):
         try:
             os.remove(path)
+            if not os.listdir(os.path.dirname(path)):
+                os.rmdir(os.path.dirname(path))
         except Exception as err:
             print(f"Error deleting file {path}: {err}")
 
@@ -390,76 +391,77 @@ def execute_task(
     task_id: str,
     content_data: Union[str, Dict[str, Any], List[Any], List[str]],
     msg: Dict[str, Any],
+    out_dir: str,
 ) -> List[str]:
     if task_id == "json2csv":
         if not isinstance(content_data, (list, dict)):
             raise HTTPException(status_code=400, detail="json2csv expects JSON content")
-        return json_to_csv(content_data, msg)
+        return json_to_csv(content_data, msg, out_dir)
 
     if task_id == "json2text" and msg.get("file", {}).get("type") == "ocr.json":
-        return [ocr_json_to_text(content_data)]
+        return [ocr_json_to_text(content_data, out_dir)]
 
     if task_id == "wordcloud":
         if not isinstance(content_data, str):
             raise HTTPException(status_code=400, detail="wordcloud expects text content")
-        return [create_wordcloud(content_data)]
+        return [create_wordcloud(content_data, out_dir)]
 
     if task_id == "remove_stop_words":
         if not isinstance(content_data, str):
             raise HTTPException(status_code=400, detail="remove_stop_words expects text content")
-        return [remove_stop_words(content_data, msg)]
+        return [remove_stop_words(content_data, msg, out_dir)]
 
     if task_id == "split_text":
         if not isinstance(content_data, str):
             raise HTTPException(status_code=400, detail="split_text expects text content")
-        return split_text(content_data, msg)
+        return split_text(content_data, msg, out_dir)
 
     if task_id == "split_by_character_sequence":
         if not isinstance(content_data, str):
             raise HTTPException(status_code=400, detail="split_by_character_sequence expects text content")
-        return split_text_by_character_sequence_task(content_data, msg)
+        return split_text_by_character_sequence_task(content_data, msg, out_dir)
 
     if task_id == "join_text":
         if not isinstance(content_data, (str, list)):
             raise HTTPException(status_code=400, detail="join_text expects text content")
-        return join_texts(content_data, msg)
+        return join_texts(content_data, msg, out_dir)
 
     if task_id == "join_raw":
         if not isinstance(content_data, (str, list)):
             raise HTTPException(status_code=400, detail="join_raw expects text content")
-        return join_raw_texts(content_data, msg)
+        return join_raw_texts(content_data, msg, out_dir)
 
     if task_id == "search_replace":
         if not isinstance(content_data, str):
             raise HTTPException(status_code=400, detail="search_replace expects text content")
-        return [search_replace_text(content_data, msg)]
+        return [search_replace_text(content_data, msg, out_dir)]
 
     raise HTTPException(status_code=400, detail=f"Unsupported task: {task_id}")
 
 
-def create_wordcloud(text: str) -> str:
+def create_wordcloud(text: str, out_dir: str) -> str:
     output_uuid = str(uuid.uuid4())
-    output_path = os.path.join(OUTPUT_FOLDER, output_uuid + ".png")
+    output_path = os.path.join(out_dir, output_uuid + ".png")
     wordcloud = WordCloud(width=800, height=400, background_color="white").generate(text)
     wordcloud.to_file(output_path)
     return output_path
 
 
-def remove_stop_words(content_data: str, msg: Dict[str, Any]) -> str:
+def remove_stop_words(content_data: str, msg: Dict[str, Any], out_dir: str) -> str:
     language = msg.get("task", {}).get("params", {}).get("language", "en")
     available_languages = get_available_languages()
     if language not in available_languages:
         language = "en"
 
     stopwords_file = f"stopwords_iso-{language}.json"
-    stopwords_path = os.path.join("stopwords", stopwords_file)
+    stopwords_path = os.path.join(STOPWORDS_DIR, stopwords_file)
 
     try:
         with open(stopwords_path, "r", encoding="utf-8") as handle:
             stopwords_list = json.load(handle)
             stopwords_lower = {word.lower() for word in stopwords_list}
     except FileNotFoundError:
-        with open(os.path.join("stopwords", "stopwords_iso-en.json"), "r", encoding="utf-8") as handle:
+        with open(os.path.join(STOPWORDS_DIR, "stopwords_iso-en.json"), "r", encoding="utf-8") as handle:
             stopwords_list = json.load(handle)
             stopwords_lower = {word.lower() for word in stopwords_list}
     except Exception as err:
@@ -478,14 +480,14 @@ def remove_stop_words(content_data: str, msg: Dict[str, Any]) -> str:
 
     filtered_text = "\n".join(filtered_lines)
     output_uuid = str(uuid.uuid4())
-    output_path = os.path.join(OUTPUT_FOLDER, output_uuid + ".txt")
+    output_path = os.path.join(out_dir, output_uuid + ".txt")
     with open(output_path, "w", encoding="utf-8") as handle:
         handle.write(filtered_text)
 
     return output_path
 
 
-def split_text(content_data: str, msg: Dict[str, Any]) -> List[str]:
+def split_text(content_data: str, msg: Dict[str, Any], out_dir: str) -> List[str]:
     params = msg.get("task", {}).get("params", {})
     chunk_size = params.get("chunk_size", 2000)
     trim = as_bool(params.get("trim"), False)
@@ -511,7 +513,7 @@ def split_text(content_data: str, msg: Dict[str, Any]) -> List[str]:
     uris = []
     for chunk_id, chunk_content in enumerate(chunks, start=1):
         chunk_filename = f"{base_label}_{chunk_id}.txt"
-        chunk_path = os.path.join(OUTPUT_FOLDER, chunk_filename)
+        chunk_path = os.path.join(out_dir, chunk_filename)
         with open(chunk_path, "w", encoding="utf-8") as handle:
             handle.write(chunk_content)
         uris.append(chunk_path)
@@ -519,7 +521,7 @@ def split_text(content_data: str, msg: Dict[str, Any]) -> List[str]:
     return uris
 
 
-def split_text_by_character_sequence_task(content_data: str, msg: Dict[str, Any]) -> List[str]:
+def split_text_by_character_sequence_task(content_data: str, msg: Dict[str, Any], out_dir: str) -> List[str]:
     params = msg.get("task", {}).get("params", {})
     split_sequence = str(params.get("split_sequence") or "")
     if not split_sequence:
@@ -544,7 +546,7 @@ def split_text_by_character_sequence_task(content_data: str, msg: Dict[str, Any]
     uris = []
     for chunk_id, chunk_content in enumerate(chunks, start=1):
         chunk_filename = f"{base_label}_{chunk_id}.txt"
-        chunk_path = os.path.join(OUTPUT_FOLDER, chunk_filename)
+        chunk_path = os.path.join(out_dir, chunk_filename)
         with open(chunk_path, "w", encoding="utf-8") as handle:
             handle.write(chunk_content)
         uris.append(chunk_path)
@@ -702,7 +704,7 @@ def parse_search_replace_pairs(msg: Dict[str, Any]) -> List[Dict[str, str]]:
     return parsed_pairs
 
 
-def search_replace_text(content_data: str, msg: Dict[str, Any]) -> str:
+def search_replace_text(content_data: str, msg: Dict[str, Any], out_dir: str) -> str:
     pairs = parse_search_replace_pairs(msg)
     if not pairs:
         raise HTTPException(status_code=400, detail="search_replace requires at least one valid pair")
@@ -712,11 +714,24 @@ def search_replace_text(content_data: str, msg: Dict[str, Any]) -> str:
         result = result.replace(pair["search"], pair["replace"])
 
     output_uuid = str(uuid.uuid4())
-    output_path = os.path.join(OUTPUT_FOLDER, output_uuid + ".txt")
+    output_path = os.path.join(out_dir, output_uuid + ".txt")
     with open(output_path, "w", encoding="utf-8") as handle:
         handle.write(result)
 
     return output_path
+
+
+def many_to_one_path(output_uuid: str, extension: str) -> str:
+    folder = os.path.join(OUTPUT_FOLDER, "many-to-one")
+    os.makedirs(folder, exist_ok=True)
+    return os.path.join(folder, f"{os.path.basename(str(output_uuid))}.{extension}")
+
+
+def finish_many_to_one(output_path: str, out_dir: str) -> str:
+    """Move the collected file into the request's dir, so it is served or staged like other outputs."""
+    target = os.path.join(out_dir, os.path.basename(output_path))
+    shutil.move(output_path, target)
+    return target
 
 
 def derive_many_to_one_output_uuid(msg: Dict[str, Any], task_id: str, include_root_source: bool = True) -> str:
@@ -742,7 +757,7 @@ def derive_many_to_one_output_uuid(msg: Dict[str, Any], task_id: str, include_ro
     return str(uuid.uuid4())
 
 
-def join_texts(content_data: Union[str, List[str]], msg: Dict[str, Any]) -> List[str]:
+def join_texts(content_data: Union[str, List[str]], msg: Dict[str, Any], out_dir: str) -> List[str]:
     separator = msg.get("task", {}).get("params", {}).get("separator", "\n")
     if separator is None:
         separator = "\n"
@@ -766,7 +781,7 @@ def join_texts(content_data: Union[str, List[str]], msg: Dict[str, Any]) -> List
                 joined_parts.append(text)
 
         output_uuid = str(uuid.uuid4())
-        output_path = os.path.join(OUTPUT_FOLDER, output_uuid + ".txt")
+        output_path = os.path.join(out_dir, output_uuid + ".txt")
         with open(output_path, "w", encoding="utf-8") as handle:
             handle.write(separator.join(joined_parts))
 
@@ -780,7 +795,7 @@ def join_texts(content_data: Union[str, List[str]], msg: Dict[str, Any]) -> List
     output_uuid = derive_many_to_one_output_uuid(msg, "join_text")
     msg["output_uuid"] = output_uuid
 
-    output_path = os.path.join(OUTPUT_FOLDER, output_uuid + ".txt")
+    output_path = many_to_one_path(output_uuid, "txt")
     current_file = int(msg.get("current_file", 1) or 1)
     total_files = int(msg.get("total_files", current_file) or current_file)
 
@@ -797,12 +812,12 @@ def join_texts(content_data: Union[str, List[str]], msg: Dict[str, Any]) -> List
         handle.write(content_data)
 
     if current_file == total_files:
-        return [output_path]
+        return [finish_many_to_one(output_path, out_dir)]
 
     return []
 
 
-def join_raw_texts(content_data: Union[str, List[str]], msg: Dict[str, Any]) -> List[str]:
+def join_raw_texts(content_data: Union[str, List[str]], msg: Dict[str, Any], out_dir: str) -> List[str]:
     separator = msg.get("task", {}).get("params", {}).get("separator", "\n")
     if separator is None:
         separator = "\n"
@@ -826,7 +841,7 @@ def join_raw_texts(content_data: Union[str, List[str]], msg: Dict[str, Any]) -> 
                 joined_parts.append(text)
 
         output_uuid = str(uuid.uuid4())
-        output_path = os.path.join(OUTPUT_FOLDER, output_uuid + ".txt")
+        output_path = os.path.join(out_dir, output_uuid + ".txt")
         with open(output_path, "w", encoding="utf-8") as handle:
             handle.write(separator.join(joined_parts))
 
@@ -840,7 +855,7 @@ def join_raw_texts(content_data: Union[str, List[str]], msg: Dict[str, Any]) -> 
     output_uuid = derive_many_to_one_output_uuid(msg, "join_raw", include_root_source=False)
     msg["output_uuid"] = output_uuid
 
-    output_path = os.path.join(OUTPUT_FOLDER, output_uuid + ".txt")
+    output_path = many_to_one_path(output_uuid, "txt")
     current_file = int(msg.get("batch_current_file", msg.get("current_file", 1)) or 1)
     total_files = int(msg.get("batch_total_files", msg.get("total_files", current_file)) or current_file)
 
@@ -856,13 +871,14 @@ def join_raw_texts(content_data: Union[str, List[str]], msg: Dict[str, Any]) -> 
         handle.write(content_data)
 
     if current_file == total_files:
-        return [output_path]
+        return [finish_many_to_one(output_path, out_dir)]
 
     return []
 
 
 def ocr_json_to_text(
-    json_data: Union[str, List[Dict[str, Any]], Dict[str, Any], List[Any]]
+    json_data: Union[str, List[Dict[str, Any]], Dict[str, Any], List[Any]],
+    out_dir: str,
 ) -> str:
     if not isinstance(json_data, list):
         try:
@@ -878,14 +894,14 @@ def ocr_json_to_text(
                 text_parts.append(text.strip())
 
     output_uuid = str(uuid.uuid4())
-    output_path = os.path.join(OUTPUT_FOLDER, output_uuid + ".txt")
+    output_path = os.path.join(out_dir, output_uuid + ".txt")
     with open(output_path, "w", encoding="utf-8") as handle:
         handle.write("\n".join(text_parts))
 
     return output_path
 
 
-def json_to_csv(content_json: Union[Dict[str, Any], List[Any]], msg: Dict[str, Any]) -> List[str]:
+def json_to_csv(content_json: Union[Dict[str, Any], List[Any]], msg: Dict[str, Any], out_dir: str) -> List[str]:
     if not isinstance(msg, dict):
         raise HTTPException(status_code=400, detail=f"Expected JSON object, got {type(msg).__name__}")
 
@@ -896,7 +912,7 @@ def json_to_csv(content_json: Union[Dict[str, Any], List[Any]], msg: Dict[str, A
             output_uuid = str(uuid.uuid4())
             msg["output_uuid"] = output_uuid
 
-        output_path = os.path.join(OUTPUT_FOLDER, output_uuid + ".csv")
+        output_path = many_to_one_path(output_uuid, "csv")
         current_file = int(msg.get("current_file", 1) or 1)
         total_files = int(msg.get("total_files", current_file) or current_file)
 
@@ -906,12 +922,15 @@ def json_to_csv(content_json: Union[Dict[str, Any], List[Any]], msg: Dict[str, A
             json_to_csv_custom(content_json, msg, append=True, output_path=output_path)
 
         if current_file == total_files:
-            return [output_path]
+            return [finish_many_to_one(output_path, out_dir)]
         return []
 
     output_uuid = str(uuid.uuid4())
-    output_path = os.path.join(OUTPUT_FOLDER, output_uuid + ".csv")
+    output_path = os.path.join(out_dir, output_uuid + ".csv")
     json_to_csv_custom(content_json, msg, output_path=output_path)
+    if not os.path.exists(output_path):
+        # nothing to convert: this returned a path that didn't exist
+        raise HTTPException(status_code=400, detail="json2csv found no JSON objects to convert")
     return [output_path]
 
 
@@ -1164,7 +1183,7 @@ def get_available_languages() -> Dict[str, str]:
     }
 
     available_languages: Dict[str, str] = {}
-    stopwords_dir = "stopwords"
+    stopwords_dir = STOPWORDS_DIR
 
     if os.path.exists(stopwords_dir):
         for filename in os.listdir(stopwords_dir):
@@ -1179,4 +1198,5 @@ def get_available_languages() -> Dict[str, str]:
 if __name__ == "__main__":
     import uvicorn
 
-    uvicorn.run(app, host="0.0.0.0", port=9008)
+    print(f"storage mode: {md_storage.describe_mode()}")
+    uvicorn.run(app, host="0.0.0.0", port=int(os.getenv("PORT", "9008")))

@@ -14,7 +14,7 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy the application code
-COPY api.py service_registration.py service.json /app/
+COPY api.py md_storage.py service_registration.py service.json /app/
 COPY stopwords/* /app/stopwords/
 COPY help /app/help/
 

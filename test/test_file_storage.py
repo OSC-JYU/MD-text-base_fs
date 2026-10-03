@@ -31,6 +31,13 @@ class TestFileStorageMode(unittest.TestCase):
         self.addCleanup(self.patch_md_root.stop)
         self.addCleanup(self.patch_output.stop)
 
+    def _output_file(self, label: str) -> str:
+        """The output with this label in MessyDesk's tmp/ (outputs are moved there as <random>_<label>)."""
+        tmp_dir = os.path.join(self.md_root, "data", "messydesk", "tmp")
+        matches = [name for name in os.listdir(tmp_dir) if name.endswith("_" + label)] if os.path.isdir(tmp_dir) else []
+        self.assertEqual(len(matches), 1, (label, matches))
+        return os.path.join(tmp_dir, matches[0])
+
     def _write_source(self, rel_path: str, content: str) -> str:
         abs_path = os.path.join(self.md_root, rel_path)
         os.makedirs(os.path.dirname(abs_path), exist_ok=True)
@@ -70,7 +77,7 @@ class TestFileStorageMode(unittest.TestCase):
             "file": {"path": rel_path, "label": "source.txt", "extension": "txt"},
         }
 
-        content = asyncio.run(api.load_input_content(msg, None))
+        content = asyncio.run(api.load_input_content(msg, None, self.output_dir))
         self.assertEqual(content, "hello from disk")
 
     def test_process_endpoint_request_file_storage_split_text(self):
@@ -102,9 +109,9 @@ class TestFileStorageMode(unittest.TestCase):
         self.assertEqual(response_payload["response"]["files"][0]["label"], "sample_1.txt")
 
         expected_files = [
-            os.path.join(self.output_dir, "sample_1.txt"),
-            os.path.join(self.output_dir, "sample_2.txt"),
-            os.path.join(self.output_dir, "sample_3.txt"),
+            self._output_file("sample_1.txt"),
+            self._output_file("sample_2.txt"),
+            self._output_file("sample_3.txt"),
         ]
         for expected in expected_files:
             self.assertTrue(os.path.exists(expected), expected)
@@ -133,9 +140,9 @@ class TestFileStorageMode(unittest.TestCase):
 
         self.assertEqual(response_payload["response"]["type"], "disk")
 
-        chunk_1 = os.path.join(self.output_dir, "sample_trim_1.txt")
-        chunk_2 = os.path.join(self.output_dir, "sample_trim_2.txt")
-        chunk_3 = os.path.join(self.output_dir, "sample_trim_3.txt")
+        chunk_1 = self._output_file("sample_trim_1.txt")
+        chunk_2 = self._output_file("sample_trim_2.txt")
+        chunk_3 = self._output_file("sample_trim_3.txt")
 
         with open(chunk_1, "r", encoding="utf-8") as handle:
             self.assertEqual(handle.read(), "A B")
@@ -176,9 +183,9 @@ class TestFileStorageMode(unittest.TestCase):
         self.assertEqual(response_payload["response"]["type"], "disk")
         self.assertEqual(len(response_payload["response"]["files"]), 3)
 
-        chunk_1 = os.path.join(self.output_dir, "sequence_sample_1.txt")
-        chunk_2 = os.path.join(self.output_dir, "sequence_sample_2.txt")
-        chunk_3 = os.path.join(self.output_dir, "sequence_sample_3.txt")
+        chunk_1 = self._output_file("sequence_sample_1.txt")
+        chunk_2 = self._output_file("sequence_sample_2.txt")
+        chunk_3 = self._output_file("sequence_sample_3.txt")
 
         with open(chunk_1, "r", encoding="utf-8") as handle:
             self.assertEqual(handle.read(), "Title\n")
@@ -281,7 +288,7 @@ class TestFileStorageMode(unittest.TestCase):
         self.assertEqual(len(res2["response"]["files"]), 1)
         self.assertEqual(res2["response"]["files"][0]["label"], "joined_text_test.txt")
 
-        joined_path = os.path.join(self.output_dir, "joined_text_test.txt")
+        joined_path = self._output_file("joined_text_test.txt")
         with open(joined_path, "r", encoding="utf-8") as handle:
             self.assertEqual(handle.read(), "alpha\n---\nbeta")
 
@@ -344,7 +351,7 @@ class TestFileStorageMode(unittest.TestCase):
         self.assertEqual(len(res2["response"]["files"]), 1)
         self.assertEqual(res2["response"]["files"][0]["label"], "joined_input_set_test.txt")
 
-        joined_path = os.path.join(self.output_dir, "joined_input_set_test.txt")
+        joined_path = self._output_file("joined_input_set_test.txt")
         with open(joined_path, "r", encoding="utf-8") as handle:
             self.assertEqual(handle.read(), "first\nsecond")
 
@@ -426,7 +433,7 @@ class TestFileStorageMode(unittest.TestCase):
         self.assertEqual(len(responses[2]["response"]["files"]), 1)
 
         output_label = responses[2]["response"]["files"][0]["label"]
-        output_path = os.path.join(self.output_dir, output_label)
+        output_path = self._output_file(output_label)
         with open(output_path, "r", encoding="utf-8") as handle:
             self.assertEqual(handle.read(), "alpha\nbeta\ngamma")
 
@@ -502,7 +509,7 @@ class TestFileStorageMode(unittest.TestCase):
         self.assertEqual(len(responses[2]["response"]["files"]), 1)
 
         output_label = responses[2]["response"]["files"][0]["label"]
-        output_path = os.path.join(self.output_dir, output_label)
+        output_path = self._output_file(output_label)
         with open(output_path, "r", encoding="utf-8") as handle:
             self.assertEqual(handle.read(), "doc-a\ndoc-b\ndoc-c")
 
@@ -537,7 +544,7 @@ class TestFileStorageMode(unittest.TestCase):
         self.assertEqual(len(response_payload["response"]["files"]), 1)
 
         output_label = response_payload["response"]["files"][0]["label"]
-        output_path = os.path.join(self.output_dir, output_label)
+        output_path = self._output_file(output_label)
         with open(output_path, "r", encoding="utf-8") as handle:
             self.assertEqual(handle.read(), "wolf wolf bird")
 
@@ -553,10 +560,41 @@ class TestFileStorageMode(unittest.TestCase):
                         },
                     }
                 },
+                self.output_dir,
             )
 
         self.assertEqual(err.exception.status_code, 400)
         self.assertIn("expected search:replace", err.exception.detail)
+
+    def test_http_mode_serves_outputs_from_a_request_dir(self):
+        payload = {"task": {"id": "split_text", "params": {"chunk_size": 4}}, "file": {"label": "up.txt", "extension": "txt"}}
+        message = UploadFile(file=io.BytesIO(json.dumps(payload).encode("utf-8")), filename="message.json")
+        content = UploadFile(file=io.BytesIO(b"abcdefgh"), filename="up.txt")
+        with patch.object(api, "MD_ROOT", None):
+            result = asyncio.run(api.process_files(self._empty_request(), request=None, message=message, content=content))
+        self.assertEqual(result["response"]["type"], "stored")
+        uris = result["response"]["uri"]
+        self.assertEqual([u.rsplit("/", 1)[1] for u in uris], ["up_1.txt", "up_2.txt"])
+        output_id = uris[0].split("/")[2]
+        self.assertEqual(sorted(os.listdir(os.path.join(self.output_dir, output_id))), ["up_1.txt", "up_2.txt"])
+
+    def test_disk_request_without_md_path_is_refused(self):
+        payload = {"task": {"id": "split_text"}, "file": {"path": "data/messydesk/x.txt"}}
+        message = UploadFile(file=io.BytesIO(json.dumps(payload).encode("utf-8")), filename="message.json")
+        with patch.object(api, "MD_ROOT", None):
+            with self.assertRaises(HTTPException) as err:
+                asyncio.run(api.process_files(self._empty_request(), request=None, message=message, content=None))
+        self.assertEqual(err.exception.status_code, 400)
+        self.assertIn("disk mode is off", err.exception.detail)
+
+    def test_disk_mode_leaves_nothing_in_output(self):
+        rel_path = "data/messydesk/leftover.txt"
+        self._write_source(rel_path, "one two three")
+        payload = {"task": {"id": "wordcloud"}, "file": {"path": rel_path, "label": "leftover.txt", "extension": "txt"}}
+        message = UploadFile(file=io.BytesIO(json.dumps(payload).encode("utf-8")), filename="message.json")
+        result = asyncio.run(api.process_files(self._empty_request(), request=None, message=message, content=None))
+        self.assertEqual(len(result["response"]["files"]), 1)
+        self.assertEqual(os.listdir(self.output_dir), [])
 
 
 if __name__ == "__main__":

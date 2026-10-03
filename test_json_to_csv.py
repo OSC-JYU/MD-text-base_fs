@@ -35,7 +35,7 @@ def test_json_to_csv_append():
         
         # Test 1: Create initial CSV file
         print("Test 1: Creating initial CSV file...")
-        result1 = json_to_csv_custom(data1, append=False, output_path=output_path)
+        result1 = json_to_csv_custom(data1, {}, append=False, output_path=output_path)
         print(f"Result 1: {result1[:100]}...")
         
         # Verify first file
@@ -45,7 +45,7 @@ def test_json_to_csv_append():
         
         # Test 2: Append second batch
         print("\nTest 2: Appending second batch...")
-        result2 = json_to_csv_custom(data2, append=True, output_path=output_path)
+        result2 = json_to_csv_custom(data2, {}, append=True, output_path=output_path)
         print(f"Result 2: {result2}")
         
         # Verify appended content
@@ -55,7 +55,7 @@ def test_json_to_csv_append():
         
         # Test 3: Append third batch (different structure)
         print("\nTest 3: Appending third batch with different structure...")
-        result3 = json_to_csv_custom(data3, append=True, output_path=output_path)
+        result3 = json_to_csv_custom(data3, {}, append=True, output_path=output_path)
         print(f"Result 3: {result3}")
         
         # Verify final content
@@ -84,7 +84,7 @@ def test_json_to_csv_append():
             ]
         }
         
-        result4 = json_to_csv_custom(nested_data, append=True, output_path=output_path)
+        result4 = json_to_csv_custom(nested_data, {}, append=True, output_path=output_path)
         print(f"Result 4: {result4}")
         
         # Verify nested content
@@ -102,7 +102,7 @@ def test_json_to_csv_append():
         ]
         
         # First file (current_file = 1)
-        result5 = json_to_csv_custom(many_to_one_data, append=False, output_path=output_path)
+        result5 = json_to_csv_custom(many_to_one_data, {}, append=False, output_path=output_path)
         print(f"First file result: {result5[:100]}...")
         
         # Second file (current_file = 2)
@@ -111,7 +111,7 @@ def test_json_to_csv_append():
             {"id": 4, "type": "text", "status": "failed"}
         ]
         
-        result6 = json_to_csv_custom(more_data, append=True, output_path=output_path)
+        result6 = json_to_csv_custom(more_data, {}, append=True, output_path=output_path)
         print(f"Second file result: {result6}")
         
         # Verify many-to-one result
@@ -131,19 +131,19 @@ def test_edge_cases():
         
         # Test 1: Empty data
         print("Test 1: Empty data...")
-        result1 = json_to_csv_custom([], append=False, output_path=output_path)
+        result1 = json_to_csv_custom([], {}, append=False, output_path=output_path)
         print(f"Empty data result: '{result1}'")
         
         # Test 2: Single item
         print("\nTest 2: Single item...")
         single_item = [{"test": "value"}]
-        result2 = json_to_csv_custom(single_item, append=False, output_path=output_path)
+        result2 = json_to_csv_custom(single_item, {}, append=False, output_path=output_path)
         print(f"Single item result: {result2}")
         
         # Test 3: Append to non-existent file
         print("\nTest 3: Append to non-existent file...")
         non_existent_path = os.path.join(temp_dir, "non_existent.csv")
-        result3 = json_to_csv_custom([{"new": "data"}], append=True, output_path=non_existent_path)
+        result3 = json_to_csv_custom([{"new": "data"}], {}, append=True, output_path=non_existent_path)
         print(f"Append to non-existent result: '{result3}'")
         
         # Test 4: Different field orders
@@ -151,8 +151,8 @@ def test_edge_cases():
         data1 = [{"a": 1, "b": 2, "c": 3}]
         data2 = [{"c": 4, "a": 5, "b": 6}]  # Different order
         
-        json_to_csv_custom(data1, append=False, output_path=output_path)
-        result4 = json_to_csv_custom(data2, append=True, output_path=output_path)
+        json_to_csv_custom(data1, {}, append=False, output_path=output_path)
+        result4 = json_to_csv_custom(data2, {}, append=True, output_path=output_path)
         print(f"Different field order result: '{result4}'")
         
         with open(output_path, 'r', encoding='utf-8') as f:

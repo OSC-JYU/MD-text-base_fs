@@ -28,18 +28,17 @@ Service registration endpoints:
 - Adapter (`elg_fs`) sends one callback per file to `/api/nomad/process/files/tmp`.
 
 Important:
-- When `STORAGE_MODE=disk` (or `FILE_STORAGE_MODE=disk`), `MD_PATH` must be set.
+- Without a usable `MD_PATH` the service starts in HTTP mode (see "Storage modes" below).
 - Service loads variables from `.env` automatically at startup.
 
 Recommended `.env`:
 
 	MD_PATH="/home/YOUR_USERNAME/Projects/MessyDesk"
-	STORAGE_MODE="disk"
 
 ### Legacy compatibility mode
 
-- Service still accepts multipart fields `message` + `content`.
-- This keeps older direct HTTP testing workflows working.
+- Service still accepts multipart fields `message` + `content`, and then answers in HTTP mode: outputs are served once from `/files/<id>/<name>`.
+- Outputs nobody downloads, and many-to-one files whose set never finished, are removed after `OUTPUT_MAX_AGE_SECONDS` (default one day).
 
 ## Disk response example
 
@@ -96,3 +95,12 @@ Run these from MD-text-base directory:
 
 
 
+
+## Storage modes
+
+The service picks its mode at start-up:
+
+- **Disk mode** when `MD_PATH` points at the MessyDesk root (the directory that contains `data/`). The service reads the input from `message.file.path`, writes its output to `MD_PATH/data/<db>/tmp/`, and `/config` reports the `elg_fs` adapter. In a container, mount MessyDesk's `data/` and set `MD_PATH` to the mount's parent directory, for example `-v /path/to/MessyDesk/data:/app/data -e MD_PATH=/app`.
+- **HTTP mode** when `MD_PATH` is unset or has no `data/`. The input comes as the `content` upload, outputs are served from `/files`, and `/config` reports the `elg` adapter. `STORAGE_MODE=http` forces this mode.
+
+A request that uploads `content` is always handled in HTTP mode. `SERVICE_ADAPTER` overrides the adapter that `/config` reports.

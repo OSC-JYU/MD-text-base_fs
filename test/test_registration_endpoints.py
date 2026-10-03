@@ -8,6 +8,7 @@ from unittest.mock import patch
 os.environ.setdefault("MD_PATH", os.getcwd())
 
 import api
+import service_registration
 
 
 class TestRegistrationEndpoints(unittest.TestCase):
@@ -18,8 +19,7 @@ class TestRegistrationEndpoints(unittest.TestCase):
             with open(descriptor_path, "w", encoding="utf-8") as handle:
                 json.dump(expected, handle)
 
-            with patch.object(api, "SERVICE_DESCRIPTOR_PATH", descriptor_path):
-                loaded = api.load_service_descriptor()
+            loaded = service_registration.load_service_descriptor(tmp)
 
             self.assertEqual(loaded["id"], "md-base")
             self.assertEqual(loaded["api"], "/process")
@@ -31,29 +31,37 @@ class TestRegistrationEndpoints(unittest.TestCase):
             with open(help_md, "w", encoding="utf-8") as handle:
                 handle.write("# Text Base Help\n\nhello")
 
-            with patch.object(api, "HELP_SOURCE_CANDIDATES", [help_md]):
-                markdown = api.load_help_markdown({"id": "md-base", "name": "Base Service"})
+            markdown = service_registration.load_help_markdown({"id": "md-base", "name": "Base Service"}, [help_md])
 
             self.assertIn("Text Base Help", markdown)
 
     def test_help_fallback_uses_descriptor(self):
-        with patch.object(api, "HELP_SOURCE_CANDIDATES", []):
-            markdown = api.load_help_markdown(
-                {
-                    "id": "md-base",
-                    "name": "Base Service",
-                    "description": "Base Python scripts for texts and images.",
-                }
-            )
+        markdown = service_registration.load_help_markdown(
+            {
+                "id": "md-base",
+                "name": "Base Service",
+                "description": "Base Python scripts for texts and images.",
+            },
+            [],
+        )
 
         self.assertIn("Base Service", markdown)
         self.assertIn("md-base", markdown)
         self.assertIn("Base Python scripts for texts and images.", markdown)
 
+    def _endpoint(self, path):
+        return next(route.endpoint for route in api.app.routes if getattr(route, "path", None) == path)
+
     def test_health_endpoint_returns_ok(self):
-        response = asyncio.run(api.health())
+        response = asyncio.run(self._endpoint("/health")())
         self.assertEqual(response["status"], "ok")
-        self.assertEqual(response["service"], "md-base")
+        self.assertEqual(response["service"], "md-text-base_fs")
+
+    def test_config_reports_the_adapter_of_the_storage_mode(self):
+        response = asyncio.run(self._endpoint("/config")())
+        descriptor = json.loads(response.body)
+        self.assertEqual(descriptor["id"], "md-text-base_fs")
+        self.assertEqual(descriptor["adapter"], "elg_fs" if api.is_disk_mode() else "elg")
 
 
 if __name__ == "__main__":
