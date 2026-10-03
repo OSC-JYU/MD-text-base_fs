@@ -68,6 +68,10 @@ def register_service_registration_endpoints(
         if adapter:
             # the adapter that matches the storage mode the service started in
             descriptor["adapter"] = adapter
+        # Where MessyDesk reaches this service (e.g. its container name), when not localhost
+        local_url = os.getenv("SERVICE_LOCAL_URL")
+        if local_url:
+            descriptor["local_url"] = local_url
         return JSONResponse(status_code=200, content=descriptor)
 
     @app.get("/help")
