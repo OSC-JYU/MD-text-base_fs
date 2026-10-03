@@ -125,9 +125,9 @@
             "behaviour": "one-to-many"
         },
         "join_text": {
-            "name": "Join texts",
-            "description": "Join texts into one text",
-            "info": "Join Text",
+            "name": "Clever text join",
+            "description": "Join the texts of a set into one text per source document (for example per PDF)",
+            "info": "Clever text join",
             "behaviour": "many-to-one",
             "set_only": 1,
             "params": {
@@ -146,9 +146,9 @@
             }
         },
         "join_raw": {
-            "name": "Join raw",
-            "description": "Join all grouped inputs into a single text output",
-            "info": "Join Raw",
+            "name": "Raw text join",
+            "description": "Join all texts of a set into a single text",
+            "info": "Raw text join",
             "behaviour": "many-to-one",
             "set_only": 1,
             "params": {
@@ -185,6 +185,24 @@
                     "display": "textarea"
                 }
             }
+        },
+        "json2text": {
+            "name": "OCR JSON to text",
+            "description": "Extract the text lines of an OCR JSON file into a text file",
+            "info": "OCR text",
+            "behaviour": "one-to-one",
+            "supported_types": [
+                "ocr.json"
+            ]
+        },
+        "json2csv": {
+            "name": "JSON to CSV",
+            "description": "Flatten a JSON or JSONL file into a CSV file (semicolon separated)",
+            "info": "CSV",
+            "behaviour": "one-to-one",
+            "supported_formats": [
+                "json"
+            ]
         }
     }
 }

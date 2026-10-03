@@ -433,6 +433,8 @@ class TestFileStorageMode(unittest.TestCase):
         self.assertEqual(len(responses[2]["response"]["files"]), 1)
 
         output_label = responses[2]["response"]["files"][0]["label"]
+        # named after the root source (the PDF the pages came from)
+        self.assertEqual(output_label, "example.txt")
         output_path = self._output_file(output_label)
         with open(output_path, "r", encoding="utf-8") as handle:
             self.assertEqual(handle.read(), "alpha\nbeta\ngamma")
@@ -452,6 +454,7 @@ class TestFileStorageMode(unittest.TestCase):
                 "input_set": "#1:1",
                 "output": "many-to-one",
                 "set_process": "#200:2",
+                "set_label": "Letters 1890",
                 "current_file": 1,
                 "total_files": 2,
                 "batch_current_file": 1,
@@ -465,6 +468,7 @@ class TestFileStorageMode(unittest.TestCase):
                 "input_set": "#1:1",
                 "output": "many-to-one",
                 "set_process": "#200:2",
+                "set_label": "Letters 1890",
                 "current_file": 2,
                 "total_files": 2,
                 "batch_current_file": 2,
@@ -478,6 +482,7 @@ class TestFileStorageMode(unittest.TestCase):
                 "input_set": "#1:1",
                 "output": "many-to-one",
                 "set_process": "#200:2",
+                "set_label": "Letters 1890",
                 "current_file": 1,
                 "total_files": 1,
                 "batch_current_file": 3,
@@ -509,6 +514,8 @@ class TestFileStorageMode(unittest.TestCase):
         self.assertEqual(len(responses[2]["response"]["files"]), 1)
 
         output_label = responses[2]["response"]["files"][0]["label"]
+        # named after the input set
+        self.assertEqual(output_label, "Letters 1890.txt")
         output_path = self._output_file(output_label)
         with open(output_path, "r", encoding="utf-8") as handle:
             self.assertEqual(handle.read(), "doc-a\ndoc-b\ndoc-c")

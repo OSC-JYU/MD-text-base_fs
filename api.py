@@ -489,15 +489,16 @@ def remove_stop_words(content_data: str, msg: Dict[str, Any], out_dir: str) -> s
 
 def split_text(content_data: str, msg: Dict[str, Any], out_dir: str) -> List[str]:
     params = msg.get("task", {}).get("params", {})
-    chunk_size = params.get("chunk_size", 2000)
+    # same default as the descriptor
+    chunk_size = params.get("chunk_size", 1000)
     trim = as_bool(params.get("trim"), False)
 
     try:
         chunk_size = int(chunk_size)
         if chunk_size <= 0:
-            chunk_size = 2000
+            chunk_size = 1000
     except (ValueError, TypeError):
-        chunk_size = 2000
+        chunk_size = 1000
 
     file_label = msg.get("file", {}).get("label", "chunk")
     extension = msg.get("file", {}).get("extension", "txt")
@@ -727,11 +728,40 @@ def many_to_one_path(output_uuid: str, extension: str) -> str:
     return os.path.join(folder, f"{os.path.basename(str(output_uuid))}.{extension}")
 
 
-def finish_many_to_one(output_path: str, out_dir: str) -> str:
-    """Move the collected file into the request's dir, so it is served or staged like other outputs."""
-    target = os.path.join(out_dir, os.path.basename(output_path))
+def finish_many_to_one(output_path: str, out_dir: str, label: Optional[str] = None) -> str:
+    """Move the collected file into the request's dir, so it is served or staged like other outputs.
+
+    The file name becomes the output's label, so `label` (without extension) names it when given.
+    """
+    extension = os.path.splitext(output_path)[1]
+    name = f"{safe_label(label)}{extension}" if label and safe_label(label) else os.path.basename(output_path)
+    target = os.path.join(out_dir, name)
     shutil.move(output_path, target)
     return target
+
+
+def safe_label(label: Optional[str]) -> str:
+    """A label usable as a file name: no directories, no extension."""
+    base = os.path.basename(str(label or "").replace("\\", "/")).strip()
+    base = os.path.splitext(base)[0] if os.path.splitext(base)[1] else base
+    return base.strip(". ")
+
+
+def root_source_label(msg: Dict[str, Any]) -> Optional[str]:
+    """Label of the file the joined texts came from (usually the PDF, or a long text that was split)."""
+    root_source = msg.get("root_source") if isinstance(msg.get("root_source"), dict) else {}
+    return root_source.get("label") or msg.get("root_source_label")
+
+
+def input_set_label(msg: Dict[str, Any]) -> Optional[str]:
+    """Label of the set the texts are in. MessyDesk has to send it as set_label."""
+    for key in ("set_label", "input_set_label"):
+        if isinstance(msg.get(key), str) and msg[key].strip():
+            return msg[key]
+    for key in ("input_set", "set"):
+        if isinstance(msg.get(key), dict) and msg[key].get("label"):
+            return msg[key]["label"]
+    return None
 
 
 def derive_many_to_one_output_uuid(msg: Dict[str, Any], task_id: str, include_root_source: bool = True) -> str:
@@ -812,7 +842,8 @@ def join_texts(content_data: Union[str, List[str]], msg: Dict[str, Any], out_dir
         handle.write(content_data)
 
     if current_file == total_files:
-        return [finish_many_to_one(output_path, out_dir)]
+        # named after the PDF (or long text) the pages came from
+        return [finish_many_to_one(output_path, out_dir, root_source_label(msg))]
 
     return []
 
@@ -871,7 +902,8 @@ def join_raw_texts(content_data: Union[str, List[str]], msg: Dict[str, Any], out
         handle.write(content_data)
 
     if current_file == total_files:
-        return [finish_many_to_one(output_path, out_dir)]
+        # named after the set the texts are in
+        return [finish_many_to_one(output_path, out_dir, input_set_label(msg))]
 
     return []
 

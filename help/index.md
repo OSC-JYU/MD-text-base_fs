@@ -12,7 +12,7 @@ Split crunchers are one-to-many operations that break a single long text file do
 Breaks a text document into uniform chunks based on a maximum character threshold.
 
 * **Parameters:**
-  * `character_count` *(integer, default: `1000`)*: The maximum number of characters allowed in each chunk (including spaces).
+  * `chunk_size` *(integer, default: `1000`)*: The maximum number of characters allowed in each chunk (including spaces).
   * `trim` *(boolean, default: `false`)*: When enabled, collapses repeated whitespaces, tabs, and consecutive newlines before measuring the character count.
 
 ### Split by Character Sequence (`split_by_character_sequence`)
@@ -29,14 +29,24 @@ Allows you to define exact structural boundaries or anchor markers where a text 
 
 Join crunchers are many-to-one or complex grouping utilities designed to merge multiple independent text files into consolidated output documents.
 
-### Clever Join Texts (`clever_join_texts`)
+### Clever text join (`join_text`)
 Combines multiple files within a set back into unified documents by automatically reading their historical lineage. 
 
 Instead of merging everything into a single massive file, MessyDesk traces the graph's history to locate the original multi-page sources or archives from which the text segments were derived. It then groups and joins the segments accordingly.
 
 > 💡 **How it works:** Imagine you have two distinct multi-page files: `DocumentA.pdf` and `DocumentB.pdf`. You split them into individual pages, run an OCR text extraction cruncher on the pages, and feed all the resulting text segments into a single set. 
 > 
-> Applying a **Clever Join** to that set evaluates the origin tree: it identifies which segments belong to `DocumentA` and which belong to `DocumentB`, outputting exactly **two** compiled text documents—one matching the complete text of `DocumentA` and one for `DocumentB`.
+> Applying a **Clever Join** to that set evaluates the origin tree: it identifies which segments belong to `DocumentA` and which belong to `DocumentB`, outputting exactly **two** compiled text documents—one matching the complete text of `DocumentA` and one for `DocumentB`. Each output is named after its source, here `DocumentA.txt` and `DocumentB.txt`.
 
-### Raw Join Texts (`raw_join_texts`)
-A straightforward consolidation utility. It ignores file lineage entirely, takes every text file present in the connected input set, and dumps their contents back-to-back into a single, unified text node.
+### Raw text join (`join_raw`)
+A straightforward consolidation utility. It ignores file lineage entirely, takes every text file present in the connected input set, and dumps their contents back-to-back into a single, unified text node, named after the input set.
+
+---
+
+## JSON Tasks
+
+### OCR JSON to text (`json2text`)
+Extracts the recognised text lines of an OCR JSON file (`ocr.json`) into a plain text file, one line per text region.
+
+### JSON to CSV (`json2csv`)
+Flattens a JSON or JSONL file into a CSV file. Nested keys become dotted column names, lists are joined with `; `, and values are separated with `;`.
