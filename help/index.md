@@ -4,6 +4,33 @@ The **MD-Text-Base** service provides essential utilities for manipulating raw t
 
 ---
 
+## Text Tasks
+
+### Search and replace (`search_replace`)
+Replaces text with other text, for example to fix recurring OCR errors (`ſ:s`), expand
+abbreviations or remove headers.
+
+* **Parameters:**
+  * `search_replace` *(text)*: one `search:replace` pair per line. The pairs are applied from top
+    to bottom, so a later pair sees the result of the earlier ones. Leave the replacement empty to
+    delete the text (`[illegible]:`).
+  * A colon that is part of the text is written `\:`, for example `10\:30:half past ten` replaces
+    *10:30* with *half past ten*; a backslash is written `\\`.
+* Matching is exact: case, spaces and punctuation must match.
+
+### Remove stop words (`remove_stop_words`)
+Removes the most common words of a language (*and, the, ja, och*) and keeps the rest, line by line.
+Useful before word clouds and word counts.
+
+* **Parameters:**
+  * `language` *(English, Finnish or Swedish; default English)*.
+
+### Create wordcloud (`wordcloud`)
+Draws the most frequent words of the text as a picture (PNG), bigger the more often they occur.
+Remove stop words first to see the words that matter.
+
+---
+
 ## Split Tasks
 
 Split crunchers are one-to-many operations that break a single long text file down into a structured set of smaller, more manageable text nodes. This is highly useful for tools like the **Search** service, which query and index data on a per-document level.
@@ -39,7 +66,7 @@ Instead of merging everything into a single massive file, MessyDesk traces the g
 > Applying a **Clever Join** to that set evaluates the origin tree: it identifies which segments belong to `DocumentA` and which belong to `DocumentB`, outputting exactly **two** compiled text documents—one matching the complete text of `DocumentA` and one for `DocumentB`. Each output is named after its source, here `DocumentA.txt` and `DocumentB.txt`.
 
 ### Raw text join (`join_raw`)
-A straightforward consolidation utility. It ignores file lineage entirely, takes every text file present in the connected input set, and dumps their contents back-to-back into a single, unified text node, named after the input set.
+A straightforward consolidation utility. It ignores file lineage entirely, takes every text file present in the connected input set, and dumps their contents back-to-back into a single, unified text node. For now the output file is named by a code (a hash), not after the set.
 
 ---
 

@@ -14,7 +14,7 @@ import traceback
 import uuid
 import zipfile
 
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 from wordcloud import WordCloud
 from service_registration import register_service_registration_endpoints
@@ -194,8 +194,10 @@ async def load_input_content(
     work_dir: str,
 ) -> Union[str, Dict[str, Any], List[Any], List[str]]:
     if content_file is not None:
-        file_kind = infer_file_kind(msg, expect_uploaded_set_zip=True)
         raw = await content_file.read()
+        # A set comes as a ZIP only in a whole-set job; set processing uploads each file on its
+        # own (MD-consumers before that change zipped the whole set for every job, still read).
+        file_kind = infer_file_kind(msg, expect_uploaded_set_zip=bool(msg.get("input_set")) and raw[:4] == b"PK\x03\x04")
         if file_kind == "zip":
             return await get_files_zip_from_bytes(raw, work_dir)
         if file_kind == "json":
@@ -627,6 +629,29 @@ def find_split_positions(content_data: str, sequence: str, sequence_at_line_star
     return positions
 
 
+def split_pair(text: str) -> Optional[Tuple[str, str]]:
+    """search:replace at the first colon that is not escaped. "\\:" is a literal colon and
+    "\\\\" a literal backslash, in both halves; None when there is no unescaped colon."""
+    parts: List[str] = []
+    current: List[str] = []
+    i = 0
+    while i < len(text):
+        char = text[i]
+        if char == "\\" and i + 1 < len(text) and text[i + 1] in ":\\":
+            current.append(text[i + 1])
+            i += 2
+            continue
+        if char == ":" and not parts:
+            parts.append("".join(current))
+            current = []
+        else:
+            current.append(char)
+        i += 1
+    if not parts:
+        return None
+    return parts[0], "".join(current)
+
+
 def parse_search_replace_pairs(msg: Dict[str, Any]) -> List[Dict[str, str]]:
     params = msg.get("task", {}).get("params", {})
     raw_pairs: Any = (
@@ -646,13 +671,14 @@ def parse_search_replace_pairs(msg: Dict[str, Any]) -> List[Dict[str, str]]:
             line = raw_line.strip()
             if not line:
                 continue
-            if ":" not in line:
+            pair = split_pair(line)
+            if pair is None:
                 raise HTTPException(
                     status_code=400,
-                    detail=f"Invalid search_replace pair on line {idx}: expected search:replace",
+                    detail=f"Invalid search_replace pair on line {idx}: expected search:replace (write \\: for a colon in the text)",
                 )
 
-            search, replace = line.split(":", 1)
+            search, replace = pair
             if not search:
                 raise HTTPException(
                     status_code=400,
@@ -673,12 +699,13 @@ def parse_search_replace_pairs(msg: Dict[str, Any]) -> List[Dict[str, str]]:
             search = pair.get("search")
             replace = pair.get("replace", "")
         elif isinstance(pair, str):
-            if ":" not in pair:
+            split = split_pair(pair)
+            if split is None:
                 raise HTTPException(
                     status_code=400,
-                    detail=f"Invalid search_replace pair at index {idx}: expected search:replace",
+                    detail=f"Invalid search_replace pair at index {idx}: expected search:replace (write \\: for a colon in the text)",
                 )
-            search, replace = pair.split(":", 1)
+            search, replace = split
         else:
             raise HTTPException(
                 status_code=400,
@@ -754,7 +781,8 @@ def root_source_label(msg: Dict[str, Any]) -> Optional[str]:
 
 
 def input_set_label(msg: Dict[str, Any]) -> Optional[str]:
-    """Label of the set the texts are in. MessyDesk has to send it as set_label."""
+    """Label of the set the texts are in, when the message has it (set_label). MessyDesk does not
+    send it for now, so the joined text is named by its hash."""
     for key in ("set_label", "input_set_label"):
         if isinstance(msg.get(key), str) and msg[key].strip():
             return msg[key]

@@ -174,15 +174,16 @@
             "params": {
                 "search_replace": {
                     "type": "string",
-                    "description": "One search:replace pair per line, processed top to bottom",
+                    "description": "One search:replace pair per line, processed top to bottom; write \\: for a colon in the text",
                     "default": ""
                 }
             },
             "params_help": {
                 "search_replace": {
-                    "name": "search_replace",
-                    "description": "Temporary format: one search:replace pair per line",
-                    "display": "textarea"
+                    "name": "Search and replace pairs",
+                    "display": "textarea",
+                    "help": "One search:replace pair per line, applied from top to bottom. Write \\: for a colon that is part of the text (e.g. 10\\:30:half past ten), and \\\\ for a backslash.",
+                    "description": "One search:replace pair per line; \\: is a colon in the text"
                 }
             }
         },
